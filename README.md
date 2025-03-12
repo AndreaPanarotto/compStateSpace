@@ -4,4 +4,4 @@
 ## Installation
 ```r
 library(devtools)
-devtools::install_github("your-username/repo-name")
+devtools::install_github("AndreaPanarotto/compStateSpace")

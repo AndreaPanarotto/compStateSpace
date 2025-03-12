@@ -1,0 +1,3 @@
+useDynLib(compStateSpace, .registration=TRUE)
+importFrom(Rcpp, evalCpp)
+exportPattern("^[[:alpha:]]+")

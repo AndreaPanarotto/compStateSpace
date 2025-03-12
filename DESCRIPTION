@@ -1,0 +1,14 @@
+Package: compStateSpace
+Type: Package
+Title: Model-based clustering of compositional time series
+Version: 1.0
+Date: 2025-03-05
+Author: Andrea Panarotto
+Maintainer: Andrea Panarotto <andrea.panarotto@unipd.it>
+Description: The package contains functions for the model-based clustering of compositional time series. The method is based on a state-space model representation and on a mixture of experts model for the inclusion of series-specific covariates. The package includes functions for logratio transformation of the series (and their inverse transformations) and functions for Kalman filtering, smoothing and parameter estimation of the elements of the state space representation.
+License: GPL-3
+Encoding: UTF-8
+Depends: compositions
+Imports: Rcpp (>= 1.0.14), RcppArmadillo
+LinkingTo: Rcpp, RcppArmadillo
+RoxygenNote: 7.3.2

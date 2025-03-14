@@ -11,4 +11,6 @@ Encoding: UTF-8
 Depends: compositions
 Imports: Rcpp (>= 1.0.14), RcppArmadillo
 LinkingTo: Rcpp, RcppArmadillo
+VignetteBuilder: knitr
+Suggests: knitr, rmarkdown
 RoxygenNote: 7.3.2

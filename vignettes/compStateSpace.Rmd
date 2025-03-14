@@ -1,0 +1,280 @@
+---
+title: "compStateSpace"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{compStateSpace}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+```
+
+## The "compStateSpace" package
+
+The package contains functions for the model-based clustering of compositional time series. The method is based on a state-space model representation and on a mixture of experts model for the inclusion of series-specific covariates. The package includes functions for logratio transformation of the series (and their inverse transformations) and functions for Kalman filtering, smoothing and parameter estimation of the elements of the state space representation.
+
+In this vignette, we set up a simulation study to show a possible usage of the package.
+
+```{r, echo = FALSE, message = FALSE, warning = FALSE}
+# devtools::install_github("AndreaPanarotto/compStateSpace") # you need devtools!
+library("compStateSpace")
+```
+
+We initialize 3 groups of compositional time series, sampling the number of series per group and their length. We also fix the simplex size.
+
+```{r}
+K_real <- 3
+set.seed(745) # set a seed with the Pokédex # of your favourite Pokémon!
+n_series_per_group <- sample(seq(10, 30, by = 5), size = K_real, replace = TRUE)
+cmsm <- cumsum(n_series_per_group)
+n_series <- sum(n_series_per_group)
+y_list <- vector("list", n_series)
+n_len <- sample(10:20, n_series, replace = TRUE)
+DD <- 4
+```
+
+With `seed = 745`, we find groups with, respectively, 20, 20 and 30 series. We now generate the series, cluster per cluster. For each series of each cluster, we sample the initial position uniformly in the simplex, using `rDirichlet` from package `compositions`. We assume, then, different *moving behaviors* as the series evolve through time. Series in the same cluster will *evolve in a similar way*.
+
+For cluster 1, we assume the existence of a fixed perturbation vector $a$: at each time iteration, the series should tend towards such compositional vector. We also include an error $u_t$ at each step, sampled from a Dirichlet distribution, with mean on the center. The series evolves as
+$$y_{t+1} = y_t \oplus a\oplus u_t \,,$$
+where
+$$a\oplus b = \mathcal{C}(a_1\cdot b_1,\, \ldots\,,\,a_{D}\cdot b_D)$$
+and $\mathcal{C}(\cdot)$ is the normalizing operator which ensures to respect the sum-to-1 constraint.
+
+```{r}
+# first cluster
+# type of transformation of the first cluster: perturbation by the following vector
+aa <- c(0.5, 0.2, 0.2, 0.1)
+# error: perturbation by a random composition centered in the middle
+alpha_err <- 1
+for (ii in 1:cmsm[1]) {
+    ni <- n_len[ii]
+    y_mat <- matrix(NA, ni, DD)
+    # initial position is uniform
+    y_mat[1, ] <- c(compositions::rDirichlet.acomp(1, rep(1 / DD, DD)))
+    for (jj in 2:ni) {
+        uu <- c(compositions::rDirichlet.acomp(1, rep(alpha_err, DD)))
+        y_mat[jj, ] <- y_mat[jj - 1, ] * aa * uu
+        y_mat[jj, ] <- y_mat[jj, ] / sum(y_mat[jj, ])
+    }
+    y_list[[ii]] <- y_mat
+}
+```
+Each series $i$ is represented as a matrix with $n_i$ rows (one for each time observation) and $D$ columns, as the simplex dimensions.
+
+For the second cluster, we assume a simpler evolution, a sort of autoregressive process where the previous point is just perturbed by an error:
+$$y_{t+1} = y_t\oplus u_t\,,\quad u_t\sim\mathcal{D}irichlet(\alpha,\,\ldots\,,\alpha)\,.$$
+
+```{r}
+# second cluster
+# type of transformation of the second cluster: past + error
+# error: perturbation by a random composition centered in the middle
+alpha_err <- 2
+# give covariates with a group specific mean to help the cluster assignment
+mean_cov <- -1
+for (ii in (cmsm[1] + 1):cmsm[2]) {
+    ni <-  n_len[ii]
+    y_mat <- matrix(NA, ni, DD)
+    # initial position is uniform
+    y_mat[1, ] <- c(compositions::rDirichlet.acomp(1, rep(1 / DD, DD)))
+    for (jj in 2:ni) {
+        uu <- c(compositions::rDirichlet.acomp(1, rep(alpha_err, DD)))
+        y_mat[jj, ] <- y_mat[jj - 1, ] * uu
+        y_mat[jj, ] <- y_mat[jj, ] / sum(y_mat[jj, ])
+    }
+    y_list[[ii]] <- y_mat
+}
+```
+
+For the third cluster, we assume no correlation between consecutive elements of the series. Each point is an independent sample $y_t\sim \mathcal{D}irichlet(1/D\,,\ldots\,,\,1/D) \equiv \mathcal{U}nif(\mathbb{S}^{d-1})\,.$ 
+
+```{r}
+# third cluster
+# no series correlation
+# give covariates with a group specific mean to help the cluster assignment
+mean_cov <- 0
+for (ii in (cmsm[2] + 1):n_series) {
+    ni <-  n_len[ii]
+    y_mat <- matrix(NA, ni, DD)
+    # initial position is uniform
+    for (jj in 1:ni) {
+        y_mat[jj, ] <- c(compositions::rDirichlet.acomp(1, rep(1 / DD, DD)))
+    }
+    y_list[[ii]] <- y_mat
+}
+```
+
+The state-space model assumes data are transformed by isometric logratio transformation, for which we can use the first tool from `compStateSpace`, the function `comp_to_ilr` that transforms compositional series in their corresponding ilr version. The inverse transformation is also included in the package.
+
+```{r}
+z_list <- lapply(y_list, comp_to_ilr)
+```
+
+Since the model-based clustering procedure involves a mixture of experts model to include external covariates, and since this is an explicative vignette, we compute series-specific covariates, coming from cluster-specific distributions, to help us with the computation. Specifically, we assume the existence of a covariate `x` which is sampled from a normal distribution with standard deviation 1 and mean -1, 0 or 1 respectively for clusters 1, 2 and 3. After sampling, we normalize the covariates (it helps with scaling issues) and we store the sampled covariates in a list of the same length of `z_list` (again, covariates are series-specific, not timestamp-specific), adding a 1 for the intercept. We encourage you to try also without  the covariate `x`, just providing the intercept.
+
+```{r}
+xx <- rnorm(n_series, mean = rep(c(-1,0,1), n_series_per_group))
+xx <- (xx - mean(xx))/sd(xx) 
+x_list <- lapply(xx, function(x) c(1,x))
+# x_list <- lapply(rep(1,n_series), \(x) x) # intercept only
+```
+
+We can start the real fitting procedure. First, we don't know the correct number of components, so for now let us start with a large number -- 6 is enough for our goal. Then, to run `mb_clust`, we need to initialize either the system matrices of the components, or the prior assignment probabilities (given the covariates) in `g_gamma`. We already have some information on the covariates, since we created them ad hoc, but we don't want to cheat too much, so let's initialize the system matrices. To do that, we can provide an initial clustering of the series, using a fast method, and then estimate the group-wise $\mathbf{T},\ \mathbf{Q},\ \mathbf{H}$ using the command `Shumway_EM_list`. A good idea to provide an initial clustering is to use the package `dtwclust`, but we can do it randomly to complicate things.
+
+```{r}
+K_max <- 6
+KK <- K_max:2
+starttime <- Sys.time()
+sectiontime <- Sys.time()
+new_seed <- 637 # choose another Pokémon you like
+# dynamic time warping groups
+# res_dtw <- dtwclust::tsclust(z_list, k = K_max, seed = dtw_seed) # cluster initialization
+set.seed(new_seed)
+random_clust <- sample(1:K_max, n_series, TRUE)
+```
+
+Now, we let us create the containers for the initial parameters and perform the group-wise cluster initialization. One should notice that the value for parameter `probs` is a vector of 1s, since we assume that the series are now assigned with probability 1 to each of their initial cluster.
+
+```{r}
+group_T_dtw <- vector("list", K_max)
+group_Q_dtw <- vector("list", K_max)
+group_H_dtw <- vector("list", K_max)
+a0_list <- vector("list", length(z_list))
+P0_list <- vector("list", length(z_list))
+# group parameters initialization
+for (kk in 1:K_max) {
+    # cl_idx <- which(res_dtw@cluster == kk)
+    cl_idx <- which(random_clust == kk)
+    a0_l <- vector("list", length(cl_idx))
+    P0_l <- vector("list", length(cl_idx))
+    for (jj in 1:length(cl_idx)) {
+        a0_l[[jj]] <- rep(0, DD - 1)
+        P0_l[[jj]] <- rep(2, DD - 1)
+    }
+    c_res <- shumway_EM_list(
+        z_list[cl_idx],
+        a0_l,
+        P0_l,
+        TT = rep(0.5, DD - 1),
+        Q = rep(1, DD - 1),
+        H = rep(1, DD - 1),
+        probs = rep(1, length(cl_idx)),
+        EM_toll = 1e-5,
+        EM_maxit = 1e3,
+        verbose = 0
+    )
+    group_T_dtw[[kk]] <- c_res$TT
+    group_Q_dtw[[kk]] <- c_res$Q
+    group_H_dtw[[kk]] <- c_res$H
+    a0_list[cl_idx] <- c_res$a0_list
+    P0_list[cl_idx] <- c_res$P0_list
+}
+initial_par <- vector("list")
+initial_par$group_T <- group_T_dtw
+initial_par$group_Q <- group_Q_dtw
+initial_par$group_H <- group_H_dtw
+initial_par$a0_list <- a0_list
+initial_par$P0_list <- P0_list
+# initial_par$clustering <- res_dtw@cluster
+initial_par$clustering <- random_clust
+```
+
+We can now proceed with the real estimation procedure. We start with the large number of clusters from before, fit and then remove a cluster with a procedure we called `conditional backward elimination`. This will provide a good starting point for the following iteration, with one less component, until the number of components reduces to just 2. We initialize the component weight parameters in `g_gamma` to all zeros.
+
+```{r}
+result_desc <- vector("list", K_max-1)
+result_desc[[K_max-1]]$initial_par <- initial_par
+gamma_prev <- lapply(1:K_max, function(ww)
+    rep(0, length(x_list[[1]])))
+for (ii in (K_max-1):1) {
+    sectiontime <- Sys.time()
+    print(ii+1)
+    # initial group parameters
+    group_T_dtw <- result_desc[[ii]]$initial_par$group_T
+    group_Q_dtw <- result_desc[[ii]]$initial_par$group_Q
+    group_H_dtw <- result_desc[[ii]]$initial_par$group_H
+    a0_list <- result_desc[[ii]]$initial_par$a0_list
+    P0_list <- result_desc[[ii]]$initial_par$P0_list
+    
+    res_model <- mb_clust(
+        z_list,
+        a0_list,
+        P0_list,
+        group_T_dtw,
+        group_Q_dtw,
+        group_H_dtw,
+        x_list,
+        g_gamma = gamma_prev,
+        clust_maxit = 1e3,
+        clust_toll = 1e-6,
+        verbose = 0
+    )
+    result_desc[[ii]]$res_model <- res_model
+    if (ii > 1)
+    {
+        # conditional backward elimination
+        cluster_assignment <- sapply(result_desc[[ii]]$res_model$groups_probs_list, which.max)
+        group_avg <- rep(0, ii+1)
+        for (kk in 1:(ii+1))
+        {
+            group_avg[kk] <- mean(sapply(res_model$groups_probs_list[which(cluster_assignment == kk)], function(x)
+                x[kk]))
+        }
+        elim <- which.min(group_avg)
+        result_desc[[ii - 1]]$initial_par$group_T <- res_model$groups_T[-elim]
+        result_desc[[ii - 1]]$initial_par$group_Q <- res_model$groups_Q[-elim]
+        result_desc[[ii - 1]]$initial_par$group_H <- res_model$groups_H[-elim]
+        result_desc[[ii - 1]]$initial_par$a0_list <- res_model$groups_a0_list[-elim]
+        result_desc[[ii - 1]]$initial_par$P0_list <- res_model$groups_P0_list[-elim]
+        gamma_prev <- res_model$gamma[-elim]
+    }
+    print(Sys.time() - sectiontime)
+}
+print(Sys.time() - starttime)
+
+# View(result_desc)
+```
+
+We are ready to visualize our results. For each number of components, we can allocate each series to a cluster using the largest of its computed latent group membership estimators, in `groups_probs_list`. We can plot the cluster associations and compare them with the initial random clustering when $K=6$ (in red). We see that, already for $K=6$, the model had started to separate the clusters quite well. The last plot shows the ICL-BIC score, which penalizes the complete likelihood to provide a model selection criterion.
+
+```{r}
+KK <- 2:6
+for (kk in 1:length(KK)) {
+    cluster_assignment_wk <- sapply(result_desc[[kk]]$res_model$groups_probs_list, which.max)
+    plot(
+        cluster_assignment_wk,
+        main = paste("K = ",kk + 1),
+        ylab = "Cluster",
+        ylim = c(0, kk + 2)
+    )
+    abline(v = cmsm[-K_real], col = "lightgrey") # true cluster separator
+}
+points(0.2 + result_desc[[kk]]$initial_par$cluster, col = "red")
+# 
+tot_len <- (DD - 1) * sum(sapply(z_list, \(x) dim(x)[1]))
+# 
+rICLBic <- function(result,
+                 npar,
+                 len = tot_len,
+                 KK = 2:6)
+{
+    ((KK - 1) * npar + KK * 9) * log(len * 3) - 2 * sapply(result, function(x)
+        x$res_model$total_lik)
+}
+plot(KK, rICLBic(result_desc, 2), ylab = "ICLBIC", main = "Model selection")
+```
+
+The model is able to retrieve the correct number of components, having minimum ICL-BIC at $K=3$. From the plot with $K=3$, we see a mostly correct allocation of the series to the clusters, up to label switching: the predicted cluster 1 corresponds to the real cluster 1, the predicted cluster 2 corresponds to the real cluster 3 and the predicted cluster 3 corresponds to the real cluster 2.
+
+The estimates of the component weight parameters `gamma` help us with cluster interpretation as well. Let us show the group-wise estimated parameters that correspond to the covariate `x`. 
+
+```{r}
+sapply(result_desc[[2]][["res_model"]][["gamma"]], \(x) x[2])
+```
+
+The predicted cluster 1 has the lowest value in 0, so we expect that elements in this cluster have small values for `x`, while predicted cluster 2 (= true cluster 3) has the largest. This makes sense since the values for `x` were sampled from Gaussians of mean -1, 0 and 1, respectively, for the three real groups.
